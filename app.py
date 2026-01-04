@@ -5,20 +5,20 @@ import requests
 import zipfile
 import io
 import time
+import psutil  # 引入新库
 
 # --- 页面 UI ---
 st.set_page_config(page_title="哪吒探针", page_icon="⚡")
-st.title("⚡ 哪吒 Agent V1")
+st.title("⚡ 哪吒 Agent V1 (Python Native)")
 
 # --- 1. 读取 Secrets ---
 NEZHA_SERVER = st.secrets.get("NEZHA_SERVER", "")
 NEZHA_KEY = st.secrets.get("NEZHA_KEY", "")
 NEZHA_UUID = st.secrets.get("NEZHA_UUID", "")
-NEZHA_TLS = st.secrets.get("NEZHA_TLS", "false") # 默认为 false，适配你的配置
+NEZHA_TLS = st.secrets.get("NEZHA_TLS", "false")
 
 # --- 2. 核心功能 ---
 def install_agent():
-    # 强制下载 v1.14.3 (这个版本必须用 config 启动)
     if not os.path.exists("nezha-agent"):
         st.info("⬇️ 正在下载哪吒 Agent...")
         try:
@@ -35,8 +35,6 @@ def install_agent():
 
 def generate_config():
     st.info("📝 生成配置文件...")
-    
-    # 严格判定 false
     tls_val = "true" if str(NEZHA_TLS).lower() in ["true", "1", "yes", "on"] else "false"
     
     config_content = f"""
@@ -52,22 +50,39 @@ report_delay: 2
     try:
         with open("config.yml", "w") as f:
             f.write(config_content)
-        st.success(f"✅ Config生成完毕 (Server: {NEZHA_SERVER}, TLS: {tls_val})")
+        st.success(f"✅ Config生成完毕")
         return True
     except Exception as e:
         st.error(f"❌ Config生成失败: {e}")
         return False
 
+def check_process_running():
+    """
+    使用 psutil 检查进程，不再依赖系统 ps 命令
+    """
+    try:
+        for proc in psutil.process_iter(['name', 'cmdline']):
+            try:
+                # 检查进程名是否包含 nezha-agent
+                if 'nezha-agent' in proc.info['name']:
+                    return True
+                # 或者检查命令行参数
+                if proc.info['cmdline'] and './nezha-agent' in proc.info['cmdline']:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    except Exception:
+        pass
+    return False
+
 def run_agent():
-    # 检查进程
-    res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
-    if "nezha-agent" in res.stdout:
+    # 使用新函数检查进程
+    if check_process_running():
         st.success("🟢 探针运行中...")
         return
 
     st.warning("🟡 正在启动...")
     
-    # 使用 -c 读取我们生成的 config.yml
     cmd = ["./nezha-agent", "-c", "config.yml"]
 
     try:
@@ -76,9 +91,8 @@ def run_agent():
         
         time.sleep(2)
         
-        # 验证结果
-        res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
-        if "nezha-agent" in res.stdout:
+        # 再次检查
+        if check_process_running():
             st.success("🚀 启动成功！已连接面板。")
         else:
             st.error("❌ 启动失败，日志如下：")
@@ -96,6 +110,5 @@ else:
         if generate_config():
             run_agent()
 
-# 手动刷新按钮
 if st.button("刷新状态"):
     st.rerun()
