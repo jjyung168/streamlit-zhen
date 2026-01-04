@@ -5,42 +5,30 @@ import requests
 import zipfile
 import io
 import time
+import uuid
 
 # --- 页面 UI ---
-st.set_page_config(page_title="哪吒 V1 探针 (修正版)", page_icon="🛡️")
-st.title("🛡️ 哪吒 V1 Agent (Fixed)")
+st.set_page_config(page_title="哪吒 V1 (Config模式)", page_icon="⚙️")
+st.title("⚙️ 哪吒 V1 Agent (v1.14.3+)")
 
-# --- 1. 配置读取 (从 Secrets 获取) ---
-# 面板地址 (例如: grpc.example.com:443)
-NEZHA_SERVER = st.secrets.get("NEZHA_SERVER", "")
+# --- 1. 读取配置 ---
+# 必填
+NEZHA_SERVER = st.secrets.get("NEZHA_SERVER", "")  # 面板地址:端口
+NEZHA_KEY = st.secrets.get("NEZHA_KEY", "")        # 对应面板里的密钥/Client Secret
 
-# 探针密钥 (通信认证用，对应面板里的 Secret) - 修正点：这才是 -p 参数
-NEZHA_PASSWORD = st.secrets.get("NEZHA_PASSWORD", "")
+# 选填
+NEZHA_UUID = st.secrets.get("NEZHA_UUID", "")      # 固定 UUID，防止重启变新机
+NEZHA_TLS = st.secrets.get("NEZHA_TLS", "true")    # 是否开启 TLS
 
-# 探针 UUID (身份标识，对应面板里的 Server ID) - 修正点：这是 --uuid 参数
-NEZHA_UUID = st.secrets.get("NEZHA_UUID", "")
-
-# 是否开启 TLS (通常填 true)
-NEZHA_TLS = st.secrets.get("NEZHA_TLS", "true")
-
-# --- 2. 核心逻辑 ---
-def get_agent_status():
-    try:
-        # 简单检查进程是否存在
-        res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
-        if "nezha-agent" in res.stdout:
-            return True
-    except:
-        return False
-    return False
+# --- 2. 核心功能 ---
 
 def install_agent():
     agent_bin = "nezha-agent"
     if not os.path.exists(agent_bin):
-        st.info("⬇️ 正在下载哪吒 Agent...")
+        st.info("⬇️ 正在下载哪吒 Agent v1.14.3...")
         try:
-            # 下载最新版 Linux amd64
-            url = "https://github.com/nezhahq/agent/releases/latest/download/nezha-agent_linux_amd64.zip"
+            # 下载官方 Release
+            url = "https://github.com/nezhahq/agent/releases/download/v1.14.3/nezha-agent_linux_amd64.zip"
             r = requests.get(url, timeout=30)
             if r.status_code == 200:
                 with zipfile.ZipFile(io.BytesIO(r.content)) as z:
@@ -55,57 +43,89 @@ def install_agent():
             return False
     return True
 
+def generate_config():
+    """
+    根据 Secrets 生成 config.yml 文件
+    因为 V1 版本必须通过配置文件启动
+    """
+    st.info("📝 正在生成配置文件...")
+    
+    # 处理 TLS 布尔值
+    tls_bool = "true" if NEZHA_TLS.lower() in ["true", "1", "yes"] else "false"
+    
+    # 如果用户没提供 UUID，为了防止每次重启变 ID，我们可以生成一个存下来（但在 Streamlit 存不住）
+    # 所以建议用户务必在 Secrets 提供 UUID
+    final_uuid = NEZHA_UUID
+    if not final_uuid:
+        st.warning("⚠️ 你没有配置 NEZHA_UUID，每次重启面板上都会出现一个新的离线机器！")
+    
+    # 构造 YAML 内容
+    # V1 版本的标准配置结构
+    config_content = f"""
+server: "{NEZHA_SERVER}"
+client_secret: "{NEZHA_KEY}"
+uuid: "{final_uuid}"
+tls: {tls_bool}
+debug: false
+disable_auto_update: true
+disable_command_execute: true
+report_delay: 2
+"""
+    
+    try:
+        with open("config.yml", "w") as f:
+            f.write(config_content)
+        st.success("✅ 配置文件生成成功")
+        return True
+    except Exception as e:
+        st.error(f"❌ 配置文件生成失败: {e}")
+        return False
+
 def run_agent():
-    if get_agent_status():
-        st.success("🟢 探针运行中 (Running)")
-        return
+    # 检查是否已经在运行
+    try:
+        res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
+        if "nezha-agent" in res.stdout:
+            st.success("🟢 探针运行中 (Running)")
+            return
+    except:
+        pass
 
     st.warning("🟡 正在启动探针...")
     
-    # --- 修正后的启动命令构建 ---
-    # 基础命令: ./nezha-agent -s <server> -p <password>
-    cmd = ["./nezha-agent", "-s", NEZHA_SERVER, "-p", NEZHA_PASSWORD]
-    
-    # 如果指定了 UUID，强行绑定 (固定身份，防止重启变新机)
-    if NEZHA_UUID:
-        cmd.extend(["--uuid", NEZHA_UUID])
-    
-    # TLS 处理
-    if NEZHA_TLS.lower() in ["true", "1", "yes", "on"]:
-        cmd.append("--tls")
-    
-    # 禁用自动更新 (Streamlit 环境没权限更新自身)
-    cmd.append("--disable-auto-update")
+    # 使用 -c config.yml 启动
+    cmd = ["./nezha-agent", "-c", "config.yml"]
 
     try:
-        # 后台静默运行
         with open("agent.log", "w") as log_file:
             subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
         
         time.sleep(2)
         
-        if get_agent_status():
+        # 再次检查进程
+        res = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
+        if "nezha-agent" in res.stdout:
             st.success(f"🚀 启动成功！")
-            st.write(f"📡 Server: `{NEZHA_SERVER}`")
-            # 隐藏显示一部分 UUID 以防截图泄露
-            if NEZHA_UUID:
-                st.write(f"🆔 UUID: `{NEZHA_UUID[:4]}...{NEZHA_UUID[-4:]}`")
+            st.caption(f"Server: {NEZHA_SERVER}")
         else:
-            st.error("❌ 启动失败")
-            # 读取日志帮助排错
+            st.error("❌ 启动失败，请检查 agent.log")
             if os.path.exists("agent.log"):
                 with open("agent.log", "r") as f:
                     st.code(f.read())
+                    
     except Exception as e:
         st.error(f"启动异常: {e}")
 
 # --- 3. 执行入口 ---
-if not NEZHA_SERVER or not NEZHA_PASSWORD:
-    st.error("⚠️ 缺少配置！请在 Secrets 中配置 `NEZHA_SERVER` 和 `NEZHA_PASSWORD`")
+if not NEZHA_SERVER or not NEZHA_KEY:
+    st.error("请先在 Secrets 配置 `NEZHA_SERVER` 和 `NEZHA_KEY`")
 else:
     if install_agent():
-        run_agent()
+        if generate_config():
+            run_agent()
 
-# --- 4. 调试与保活 ---
-st.divider()
-st.caption("ℹ️ 这是修正版：分离了密钥(-p)和UUID(--uuid)。请使用监控工具保持此页面活跃。")
+# --- 4. 调试 ---
+with st.expander("查看生成的 config.yml (敏感信息)"):
+    if os.path.exists("config.yml"):
+        with open("config.yml", "r") as f:
+            st.code(f.read())
