@@ -1,14 +1,22 @@
-- name: Ping Streamlit app (no-fail)
-  run: |
-    set +e
-    URL="https://app-zhen-gbvangddctfuxkqfqrfbrd.streamlit.app/"
-    echo "Pinging: $URL"
+name: keep-awake
 
-    # 不跟随跳转；加 UA；遇到网络抖动重试；就算失败也不让 job 失败
-    curl -sS -m 30 \
-      --retry 3 --retry-delay 5 --retry-all-errors \
-      -A "Mozilla/5.0 (X11; Linux x86_64)" \
-      -o /dev/null -w "HTTP=%{http_code} time=%{time_total}s\n" \
-      "$URL" || true
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
-    echo "done"
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit app (no-fail)
+        run: |
+          set +e
+          URL="https://app-zhen-gbvangddctfuxkqfqrfbrd.streamlit.app/"
+          echo "Pinging: $URL"
+          curl -sS -m 30 \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            -A "Mozilla/5.0 (X11; Linux x86_64)" \
+            -o /dev/null -w "HTTP=%{http_code} time=%{time_total}s\n" \
+            "$URL" || true
+          echo "done"
